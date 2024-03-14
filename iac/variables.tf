@@ -48,8 +48,15 @@ variable "active_directory_forest_domain_name" {
   type        = string
 }
 
+variable "workspace_default_ou" {
+  description = "The default Organization Unit for for the workspace directories. Example: If the forest domain name is 'ad.bigbang.dev' the default OU might be 'OU=AWS,DC=ad,DC=bigbang,DC=dev'"
+  type = string
+}
+
 variable "dsrm_password" {
   description = "The password to use for Directory Services Restore Mode. Must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character."
   type = string
   sensitive = true
 }
+
+
