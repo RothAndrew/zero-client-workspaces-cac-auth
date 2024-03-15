@@ -34,7 +34,6 @@ resource "random_id" "default" {
 
 locals {
   name                          = "${var.name_prefix}-${lower(random_id.default.hex)}"
-#  access_log_bucket_name_prefix = "${local.name}-accesslogs"
   tags = merge(
     var.tags,
     {
@@ -69,25 +68,26 @@ data "aws_iam_policy_document" "workspaces" {
   }
 }
 
-resource "aws_iam_role" "workspaces_default" {
-  name               = "workspaces_DefaultRole"
-  assume_role_policy = data.aws_iam_policy_document.workspaces.json
-}
+#resource "aws_iam_role" "workspaces_default" {
+#  name               = "workspaces_DefaultRole"
+#  assume_role_policy = data.aws_iam_policy_document.workspaces.json
+#}
+#
+#resource "aws_iam_role_policy_attachment" "workspaces_default_service_access" {
+#  role       = aws_iam_role.workspaces_default.name
+#  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonWorkSpacesServiceAccess"
+#}
+#
+#resource "aws_iam_role_policy_attachment" "workspaces_default_self_service_access" {
+#  role       = aws_iam_role.workspaces_default.name
+#  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonWorkSpacesSelfServiceAccess"
+#}
 
-resource "aws_iam_role_policy_attachment" "workspaces_default_service_access" {
-  role       = aws_iam_role.workspaces_default.name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonWorkSpacesServiceAccess"
-}
-
-resource "aws_iam_role_policy_attachment" "workspaces_default_self_service_access" {
-  role       = aws_iam_role.workspaces_default.name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonWorkSpacesSelfServiceAccess"
-}
-
-resource "aws_directory_service_directory" "simple_ad" {
+resource "aws_directory_service_directory" "managed_ad" {
   name     = var.active_directory_forest_domain_name
   password = var.dsrm_password
-  size = "Small"
+  edition = "Standard"
+    type    = "MicrosoftAD"
   vpc_settings {
     subnet_ids = [module.vpc.private_subnets[0], module.vpc.private_subnets[1]]
     vpc_id     = module.vpc.vpc_id
@@ -107,7 +107,7 @@ data "aws_ami" "windows" {
   }
 }
 
-resource "aws_security_group" "active_directory_server" {
+resource "aws_security_group" "windows_bastion" {
   name = "${local.name}-active-directory-server-sg"
   description = "Security Group for the Active Directory Server"
   vpc_id      = module.vpc.vpc_id
@@ -128,13 +128,13 @@ resource "aws_security_group" "active_directory_server" {
 #}
 
 resource "aws_vpc_security_group_egress_rule" "allow_all_traffic_ipv4" {
-  security_group_id = aws_security_group.active_directory_server.id
+  security_group_id = aws_security_group.windows_bastion.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1" # semantically equivalent to all ports
 }
 
 resource "aws_vpc_security_group_egress_rule" "allow_all_traffic_ipv6" {
-  security_group_id = aws_security_group.active_directory_server.id
+  security_group_id = aws_security_group.windows_bastion.id
   cidr_ipv6         = "::/0"
   ip_protocol       = "-1" # semantically equivalent to all ports
 }
@@ -159,9 +159,14 @@ resource "aws_iam_role" "ssm_role" {
 POLICY
 }
 
-resource "aws_iam_role_policy_attachment" "ssm_policy" {
+resource "aws_iam_role_policy_attachment" "amazon_ssm_managed_instance_core" {
   role       = aws_iam_role.ssm_role.name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy_attachment" "amazon_ssm_directory_service_access" {
+  role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMDirectoryServiceAccess"
 }
 
 # Instance profile to attach the role to EC2 instance
@@ -170,43 +175,7 @@ resource "aws_iam_instance_profile" "ssm_instance_profile" {
   role = aws_iam_role.ssm_role.name
 }
 
-resource "aws_instance" "active_directory_server" {
-  ami = data.aws_ami.windows.id
-  instance_type = var.active_directory_server_instance_type
-  availability_zone = data.aws_availability_zones.available.names[0]
-  subnet_id = module.vpc.private_subnets[0]
-  key_name = var.key_name
-  get_password_data = true
-  vpc_security_group_ids = [aws_security_group.active_directory_server.id]
-  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
-  user_data = <<-EOF
-<powershell>
-# Install SSM Agent
-#Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
-#Install-Module AWS.Tools.Install -Force
-#Install-AWSToolsModule AWS.Tools.SSM -CleanUp -Force
-
-# # Turn on Active Directory Domain Services
-#Add-WindowsFeature AD-Domain-Services
-#
-## Create the forest
-#$Password = ConvertTo-SecureString "${var.dsrm_password}" -AsPlainText -Force
-#Install-ADDSForest -DomainName ${var.active_directory_forest_domain_name} -InstallDns -NoRebootOnCompletion -SafeModeAdministratorPassword $Password -Force
-#
-## Restart the computer
-#Restart-Computer -Force
-
-</powershell>
-EOF
-  tags = merge(
-    local.tags,
-    {
-      Name = "${local.name}-active-directory-server"
-    }
-  )
-}
-
-resource "aws_workspaces_ip_group" "simple_ad" {
+resource "aws_workspaces_ip_group" "managed_ad" {
   name = "Simple AD"
   description = "IP Allowlist for the Workspaces that use Simple AD"
   rules {
@@ -215,10 +184,10 @@ resource "aws_workspaces_ip_group" "simple_ad" {
   }
 }
 
-resource "aws_workspaces_directory" "simple_ad" {
-  directory_id = aws_directory_service_directory.simple_ad.id
+resource "aws_workspaces_directory" "managed_ad" {
+  directory_id = aws_directory_service_directory.managed_ad.id
   subnet_ids = [module.vpc.private_subnets[0], module.vpc.private_subnets[2]]
-  ip_group_ids = [aws_workspaces_ip_group.simple_ad.id]
+  ip_group_ids = [aws_workspaces_ip_group.managed_ad.id]
   self_service_permissions {
     change_compute_type = false
     increase_volume_size = true
@@ -243,14 +212,100 @@ resource "aws_workspaces_directory" "simple_ad" {
     user_enabled_as_local_administrator = true
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.workspaces_default_service_access,
-    aws_iam_role_policy_attachment.workspaces_default_self_service_access
-  ]
+#  depends_on = [
+#    aws_iam_role_policy_attachment.workspaces_default_service_access,
+#    aws_iam_role_policy_attachment.workspaces_default_self_service_access
+#  ]
+}
+
+resource "aws_vpc_dhcp_options" "managed_ad_dhcp" {
+  domain_name          = var.active_directory_forest_domain_name
+  domain_name_servers  = aws_directory_service_directory.managed_ad.dns_ip_addresses
+}
+
+resource "aws_vpc_dhcp_options_association" "managed_ad_dns_resolver" {
+  vpc_id          =  module.vpc.vpc_id
+  dhcp_options_id = aws_vpc_dhcp_options.managed_ad_dhcp.id
 }
 
 data "aws_workspaces_bundle" "performance_windows_pcoip_base" {
   bundle_id = "wsb-39nl99v7l"
+}
+
+resource "aws_instance" "windows_bastion" {
+  ami = data.aws_ami.windows.id
+  instance_type = var.active_directory_server_instance_type
+  availability_zone = data.aws_availability_zones.available.names[0]
+  subnet_id = module.vpc.private_subnets[0]
+  key_name = var.key_name
+  get_password_data = true
+  vpc_security_group_ids = [aws_security_group.windows_bastion.id]
+  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
+  user_data = <<-EOF
+<powershell>
+# Install SSM Agent
+Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+Install-Module AWS.Tools.Install -Force
+Install-AWSToolsModule AWS.Tools.SSM -CleanUp -Force
+
+# Turn on Active Directory Domain Services
+Install-WindowsFeature -Name AD-Domain-Services,RSAT-ADDS -IncludeManagementTools -IncludeAllSubFeature
+
+## Join the domain
+#$domain = "${var.active_directory_forest_domain_name}"
+#$username = "Admin"
+#$password = "${var.dsrm_password}" | ConvertTo-SecureString -AsPlainText -Force
+#$credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $username,$password
+#Add-Computer -DomainName $domain -Credential $credential -Verbose -Restart
+</powershell>
+EOF
+  tags = merge(
+    local.tags,
+    {
+      Name = "${local.name}-active-directory-server"
+    }
+  )
+  provisioner "local-exec" {
+    command = "aws ec2 wait instance-status-ok --region=${var.region} --instance-ids ${aws_instance.windows_bastion.id}"
+  }
+  depends_on = [
+    aws_vpc_dhcp_options_association.managed_ad_dns_resolver
+  ]
+}
+
+resource "aws_ssm_document" "windows_bastion_join_domain" {
+  name = "windows-bastion-join-domain"
+  document_type = "Command"
+  content = jsonencode(
+    {
+      schemaVersion = "2.2"
+      description = "aws:domainJoin"
+      mainSteps = [
+        {
+          action = "aws:domainJoin"
+          name = "domainJoin"
+          inputs = {
+            directoryId = aws_directory_service_directory.managed_ad.id
+            directoryName = aws_directory_service_directory.managed_ad.name
+            dnsIpAddresses = aws_directory_service_directory.managed_ad.dns_ip_addresses
+          }
+        }
+      ]
+    }
+  )
+}
+
+resource "aws_ssm_association" "windows_bastion_join_domain" {
+  name = aws_ssm_document.windows_bastion_join_domain.name
+  targets {
+    key = "InstanceIds"
+    values = [aws_instance.windows_bastion.id]
+  }
+  wait_for_success_timeout_seconds = 600
+}
+
+resource "null_resource" "port_forward_to_windows_bastion" {
+
 }
 
 #resource "aws_workspaces_workspace" "simple_ad" {
